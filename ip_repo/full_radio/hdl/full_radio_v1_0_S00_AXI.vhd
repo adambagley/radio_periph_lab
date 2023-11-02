@@ -118,8 +118,38 @@ architecture arch_imp of full_radio_v1_0_S00_AXI is
 	signal reg_data_out	:std_logic_vector(C_S_AXI_DATA_WIDTH-1 downto 0);
 	signal byte_index	: integer;
 	signal aw_en	: std_logic;
+	
+	signal free_running_counter	:unsigned(C_S_AXI_DATA_WIDTH-1 downto 0);
+	signal dds_resetn : std_logic;
+    signal dds_data_word : std_logic_vector(15 downto 0);
+    signal dds_data_word_zero : std_logic_vector(15 downto 0);
+    signal dds_data_word_tune : std_logic_vector(31 downto 0);
+    signal dds_data_word_complex : std_logic_vector(31 downto 0);
+    signal dds_data_word_downshifted : std_logic_vector(31 downto 0);
+    signal dds_data_word_valid : std_logic;
+    signal dds_data_word_tune_valid : std_logic;
+    signal dds_data_word_downshifted_valid : std_logic;
+	signal filter_0_data_word_real : std_logic_vector(39 downto 0);
+    signal filter_0_data_word_real_valid : std_logic;
+    signal filter_1_data_word_real : std_logic_vector(63 downto 0);
+    signal filter_1_data_word_real_valid : std_logic;
+    signal filter_0_data_word_imag : std_logic_vector(39 downto 0);
+    signal filter_0_data_word_imag_valid : std_logic;
+    signal filter_1_data_word_imag : std_logic_vector(63 downto 0);
+    signal filter_1_data_word_imag_valid : std_logic;
 
-COMPONENT dds_compiler_0
+  component dds_compiler_0 is
+  port (
+    aclk : IN STD_LOGIC;
+    aresetn : IN STD_LOGIC;
+    s_axis_phase_tvalid : IN STD_LOGIC;
+    s_axis_phase_tdata : IN STD_LOGIC_VECTOR(31 DOWNTO 0);
+    m_axis_data_tvalid : OUT STD_LOGIC;
+    m_axis_data_tdata : OUT STD_LOGIC_VECTOR(15 DOWNTO 0)
+  );
+  end component dds_compiler_0;
+  
+  component dds_compiler_1 IS
   PORT (
     aclk : IN STD_LOGIC;
     aresetn : IN STD_LOGIC;
@@ -128,7 +158,41 @@ COMPONENT dds_compiler_0
     m_axis_data_tvalid : OUT STD_LOGIC;
     m_axis_data_tdata : OUT STD_LOGIC_VECTOR(31 DOWNTO 0)
   );
-    END COMPONENT;
+  end component dds_compiler_1;
+  
+  component fir_compiler_0 IS
+  PORT (
+    aclk : IN STD_LOGIC;
+    s_axis_data_tvalid : IN STD_LOGIC;
+    s_axis_data_tready : OUT STD_LOGIC;
+    s_axis_data_tdata : IN STD_LOGIC_VECTOR(15 DOWNTO 0);
+    m_axis_data_tvalid : OUT STD_LOGIC;
+    m_axis_data_tdata : OUT STD_LOGIC_VECTOR(39 DOWNTO 0)
+  );
+  end component fir_compiler_0;
+  
+  component fir_compiler_1 IS
+  PORT (
+    aclk : IN STD_LOGIC;
+    s_axis_data_tvalid : IN STD_LOGIC;
+    s_axis_data_tready : OUT STD_LOGIC;
+    s_axis_data_tdata : IN STD_LOGIC_VECTOR(39 DOWNTO 0);
+    m_axis_data_tvalid : OUT STD_LOGIC;
+    m_axis_data_tdata : OUT STD_LOGIC_VECTOR(63 DOWNTO 0)
+  );
+  end component fir_compiler_1;
+  
+  component cmpy_0 IS
+  PORT (
+    aclk : IN STD_LOGIC;
+    s_axis_a_tvalid : IN STD_LOGIC;
+    s_axis_a_tdata : IN STD_LOGIC_VECTOR(31 DOWNTO 0);
+    s_axis_b_tvalid : IN STD_LOGIC;
+    s_axis_b_tdata : IN STD_LOGIC_VECTOR(31 DOWNTO 0);
+    m_axis_dout_tvalid : OUT STD_LOGIC;
+    m_axis_dout_tdata : OUT STD_LOGIC_VECTOR(31 DOWNTO 0)
+  );
+  end component cmpy_0;
 
 begin
 	-- I/O Connections assignments
@@ -367,11 +431,11 @@ begin
 	      when b"00" =>
 	        reg_data_out <= slv_reg0;
 	      when b"01" =>
-	        reg_data_out <= x"DEADBEEF";
+	        reg_data_out <= slv_reg1;
 	      when b"10" =>
 	        reg_data_out <= slv_reg2;
 	      when b"11" =>
-	        reg_data_out <= slv_reg3;
+	        reg_data_out <= std_logic_vector(free_running_counter);--slv_reg3;
 	      when others =>
 	        reg_data_out  <= (others => '0');
 	    end case;
@@ -395,20 +459,86 @@ begin
 	  end if;
 	end process;
 
-
-	-- Add user logic here
-
-your_instance_name : dds_compiler_0
-  PORT MAP (
-    aclk => s_axi_aclk,
-    aresetn => '1',
-    s_axis_phase_tvalid => '1',
-    s_axis_phase_tdata => slv_reg0,
-    m_axis_data_tvalid => m_axis_tvalid,
-    m_axis_data_tdata => m_axis_tdata
-  );
-
-
+	
+	process(s_axi_aclk) is
+	begin
+	  if (rising_edge (s_axi_aclk)) then
+	    if (s_axi_aresetn = '0') then
+	      free_running_counter <= (others => '0');
+	    else
+	      free_running_counter <= free_running_counter + 1;  
+	    end if;
+	  end if;
+	end process;
+    dds_resetn <= not slv_reg2(0);
+    dds_compiler : component dds_compiler_0
+        port map (
+            aclk => s_axi_aclk,
+            aresetn => dds_resetn,
+            s_axis_phase_tvalid => '1',
+            s_axis_phase_tdata => slv_reg0,
+            m_axis_data_tvalid => dds_data_word_valid,
+            m_axis_data_tdata => dds_data_word
+    );
+    dds_compiler_tune : component dds_compiler_1
+        port map (
+            aclk => s_axi_aclk,
+            aresetn => dds_resetn,
+            s_axis_phase_tvalid => '1',
+            s_axis_phase_tdata => slv_reg1,
+            m_axis_data_tvalid => dds_data_word_tune_valid,
+            m_axis_data_tdata => dds_data_word_tune
+    );  
+    dds_data_word_zero <= x"0000";
+    dds_data_word_complex <= dds_data_word_zero & dds_data_word;
+    complex_multiply: component cmpy_0
+        port map (
+            aclk => s_axi_aclk,
+            s_axis_a_tvalid => dds_data_word_valid,
+            s_axis_a_tdata => dds_data_word_complex,
+            s_axis_b_tvalid => dds_data_word_tune_valid,
+            s_axis_b_tdata => dds_data_word_tune,
+            m_axis_dout_tvalid => dds_data_word_downshifted_valid,
+            m_axis_dout_tdata => dds_data_word_downshifted
+    );
+    fir_filter_0_real : component fir_compiler_0
+        port map (
+            aclk => s_axi_aclk,
+            s_axis_data_tvalid => dds_data_word_downshifted_valid,
+          --s_axis_data_tready =>
+            s_axis_data_tdata => dds_data_word_downshifted(15 downto 0),
+            m_axis_data_tvalid => filter_0_data_word_real_valid,
+            m_axis_data_tdata => filter_0_data_word_real
+    );
+    fir_filter_1_real : component fir_compiler_1
+        port map (
+            aclk => s_axi_aclk,
+            s_axis_data_tvalid => filter_0_data_word_real_valid,
+          --s_axis_data_tready =>
+            s_axis_data_tdata => filter_0_data_word_real,
+            m_axis_data_tvalid => filter_1_data_word_real_valid,
+            m_axis_data_tdata => filter_1_data_word_real
+    );
+    fir_filter_0_imag : component fir_compiler_0
+        port map (
+            aclk => s_axi_aclk,
+            s_axis_data_tvalid => dds_data_word_downshifted_valid,
+          --s_axis_data_tready =>
+            s_axis_data_tdata => dds_data_word_downshifted(31 downto 16),
+            m_axis_data_tvalid => filter_0_data_word_imag_valid,
+            m_axis_data_tdata => filter_0_data_word_imag
+    );   
+    fir_filter_1_imag : component fir_compiler_1
+        port map (
+            aclk => s_axi_aclk,
+            s_axis_data_tvalid => filter_0_data_word_imag_valid,
+          --s_axis_data_tready =>
+            s_axis_data_tdata => filter_0_data_word_imag,
+            m_axis_data_tvalid => filter_1_data_word_imag_valid,
+            m_axis_data_tdata => filter_1_data_word_imag
+    );
+    m_axis_tdata <= filter_1_data_word_imag(55 downto 40) & filter_1_data_word_real(55 downto 40);
+    m_axis_tvalid <= filter_1_data_word_imag_valid and filter_1_data_word_real_valid;
 	-- User logic ends
 
 end arch_imp;
