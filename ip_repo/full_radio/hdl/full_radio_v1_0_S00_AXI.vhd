@@ -137,6 +137,13 @@ architecture arch_imp of full_radio_v1_0_S00_AXI is
     signal filter_0_data_word_imag_valid : std_logic;
     signal filter_1_data_word_imag : std_logic_vector(63 downto 0);
     signal filter_1_data_word_imag_valid : std_logic;
+    
+    signal simple_fifo_wr_data : std_logic_vector(31 downto 0);
+    signal simple_fifo_rd_data : std_logic_vector(31 downto 0);
+    signal simple_fifo_rd_count : std_logic_vector(31 downto 0);
+    signal simple_fifo_wr_valid : std_logic;
+    signal simple_fifo_rd_valid : std_logic;
+    signal simple_fifo_rd_ready : std_logic;
 
   component dds_compiler_0 is
   port (
@@ -193,6 +200,20 @@ architecture arch_imp of full_radio_v1_0_S00_AXI is
     m_axis_dout_tdata : OUT STD_LOGIC_VECTOR(31 DOWNTO 0)
   );
   end component cmpy_0;
+  
+  component axis_data_fifo_0 is
+  Port ( 
+    s_axis_aresetn : in STD_LOGIC;
+    s_axis_aclk : in STD_LOGIC;
+    s_axis_tvalid : in STD_LOGIC;
+    s_axis_tready : out STD_LOGIC;
+    s_axis_tdata : in STD_LOGIC_VECTOR ( 31 downto 0 );
+    m_axis_tvalid : out STD_LOGIC;
+    m_axis_tready : in STD_LOGIC;
+    m_axis_tdata : out STD_LOGIC_VECTOR ( 31 downto 0 );
+    axis_rd_data_count : out STD_LOGIC_VECTOR ( 31 downto 0 )
+  );
+  end component axis_data_fifo_0;
 
 begin
 	-- I/O Connections assignments
@@ -429,14 +450,19 @@ begin
 	    loc_addr := axi_araddr(ADDR_LSB + OPT_MEM_ADDR_BITS downto ADDR_LSB);
 	    case loc_addr is
 	      when b"00" =>
+	        simple_fifo_rd_ready <= '0';
 	        reg_data_out <= slv_reg0;
 	      when b"01" =>
+	        simple_fifo_rd_ready <= '0';
 	        reg_data_out <= slv_reg1;
 	      when b"10" =>
-	        reg_data_out <= slv_reg2;
+	        simple_fifo_rd_ready <= '0';
+	        reg_data_out <= simple_fifo_rd_count;--slv_reg2;
 	      when b"11" =>
-	        reg_data_out <= std_logic_vector(free_running_counter);--slv_reg3;
+	        simple_fifo_rd_ready <= slv_reg_rden;
+	        reg_data_out <= simple_fifo_rd_data;--std_logic_vector(free_running_counter);--slv_reg3;
 	      when others =>
+	        simple_fifo_rd_ready <= '0';
 	        reg_data_out  <= (others => '0');
 	    end case;
 	end process; 
@@ -539,6 +565,21 @@ begin
     );
     m_axis_tdata <= filter_1_data_word_imag(55 downto 40) & filter_1_data_word_real(55 downto 40);
     m_axis_tvalid <= filter_1_data_word_imag_valid and filter_1_data_word_real_valid;
+    
+    simple_fifo_wr_data <= filter_1_data_word_imag(55 downto 40) & filter_1_data_word_real(55 downto 40);
+    simple_fifo_wr_valid <= filter_1_data_word_imag_valid and filter_1_data_word_real_valid;    
+    axis_data_fifo_inst: component axis_data_fifo_0
+        port map ( 
+            s_axis_aresetn => s_axi_aresetn,
+            s_axis_aclk => s_axi_aclk,
+            s_axis_tvalid => simple_fifo_wr_valid,
+          --s_axis_tready =>,
+            s_axis_tdata => simple_fifo_wr_data,
+            m_axis_tvalid => simple_fifo_rd_valid,
+            m_axis_tready => simple_fifo_rd_ready,
+            m_axis_tdata => simple_fifo_rd_data,
+            axis_rd_data_count => simple_fifo_rd_count
+    );
 	-- User logic ends
 
 end arch_imp;
